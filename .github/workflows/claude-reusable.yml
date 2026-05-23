@@ -5,6 +5,12 @@ name: Claude Code (Reusable)
 
 on:
   workflow_call:
+    inputs:
+      extra_claude_args:
+        description: 'Additional claude CLI args (e.g. extra allowed tools)'
+        required: false
+        default: ''
+        type: string
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -38,7 +44,18 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GH_ADMIN_PAT || github.token }}
-          claude_args: "--allowed-tools 'Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)'"
+          claude_args: "--allowed-tools 'Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)' ${{ inputs.extra_claude_args }}"
+
+      - name: Notify failure
+        if: failure() && steps.claude.conclusion == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
+          ISSUE_NUM: ${{ github.event.issue.number || github.event.comment.issue.number }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue comment "$ISSUE_NUM" --repo "$REPO" \
+            --body "❌ Claude の実行が失敗しました。[ログを確認してください](${RUN_URL})"
 
       - name: Auto-create PR (if claude branch exists)
         id: pr-create
@@ -84,8 +101,17 @@ jobs:
           steps.pr-create.outputs.pr_number != ''
         env:
           GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
+          GH_ADMIN_PAT_VALUE: ${{ secrets.GH_ADMIN_PAT }}
           PR_NUM: ${{ steps.pr-create.outputs.pr_number }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
         run: |
+          if [ -z "$GH_ADMIN_PAT_VALUE" ]; then
+            gh issue comment "$ISSUE_NUM" --repo "$REPO" \
+              --body '⚠️ GH_ADMIN_PAT が未設定のため auto-merge をスキップします。リポジトリのシークレットを確認してください。'
+            exit 0
+          fi
+
           echo "Waiting for CI checks to complete on PR #${PR_NUM}..."
           sleep 10
 
