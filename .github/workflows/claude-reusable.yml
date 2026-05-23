@@ -26,11 +26,39 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Build context for Claude
+        id: context
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
+        run: |
+          # 直近マージ済みPR（10件）のタイトルとURL
+          PAST_PRS=$(gh pr list --repo "$REPO" --state merged --limit 10 \
+            --json title,url --jq '.[] | "- " + .title + " (" + .url + ")"' 2>/dev/null || echo "なし")
+
+          # CLAUDE.md が存在すれば先頭100行を取得（長すぎる場合は省略）
+          CLAUDE_MD=$(head -100 CLAUDE.md 2>/dev/null || echo "なし")
+
+          # コンテキストを GITHUB_OUTPUT へ複数行で出力（heredoc 形式）
+          {
+            echo "context_content<<CONTEXT_EOF"
+            echo "## 参考情報（自動注入）"
+            echo ""
+            echo "### 直近のマージ済みPR"
+            printf '%s\n' "$PAST_PRS"
+            echo ""
+            echo "### プロジェクト規約（CLAUDE.md 抜粋）"
+            printf '%s\n' "$CLAUDE_MD"
+            echo "CONTEXT_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Run Claude Code
         id: claude
@@ -39,7 +67,10 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # GH_ADMIN_PAT (workflow scope) を使うことで下流ワークフローが正常 trigger される
           github_token: ${{ secrets.GH_ADMIN_PAT || github.token }}
-          claude_args: "--allowed-tools 'Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)'"
+          prompt: ${{ steps.context.outputs.context_content }}
+          claude_args: >-
+            --allowed-tools
+            "Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)"
 
       - name: Auto-create PR (if claude branch exists)
         id: pr-create
@@ -74,7 +105,9 @@ jobs:
             --base main \
             --head "$BRANCH" \
             --title "$ISSUE_TITLE" \
-            --body "Closes #${ISSUE_NUM}")
+            --body "Closes #${ISSUE_NUM}
+
+Generated with [Claude Code](https://claude.ai/code)")
           PR_NUM=$(echo "$PR_URL" | rev | cut -d/ -f1 | rev)
           echo "Created PR #${PR_NUM} ($PR_URL)"
           echo "pr_number=${PR_NUM}" >> "$GITHUB_OUTPUT"
