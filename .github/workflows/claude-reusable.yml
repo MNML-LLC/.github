@@ -2,24 +2,15 @@ name: Claude Code (Reusable)
 
 # MNML-LLC 全リポ共通マスターワークフロー。
 # 各リポの claude.yml から uses: MNML-LLC/.github/.github/workflows/claude-reusable.yml@main で呼ぶ。
-#
-# 変更点 (Issue #168 - 自己修正ループ):
-#   - `claude` ジョブに CI 待機 + 自己修正ステップを追加
-#   - Auto-merge ステップを「CI check, auto-correct, and merge」に統合
-#   - issue_comment (修正依頼コメント) 後の CI チェックステップを追加
-#   - timeout-minutes を 30 → 60 に延長
 
 on:
   workflow_call:
     inputs:
-      max_correction_attempts:
-        description: "CI失敗時の自動修正最大試行回数"
-        type: number
-        default: 3
-      human_reviewer:
-        description: "最大試行後の通知先 GitHub ユーザー名"
+      extra_claude_args:
+        description: 'Additional claude CLI args (e.g. extra allowed tools)'
+        required: false
+        default: ''
         type: string
-        default: "info-mnml"
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -40,7 +31,7 @@ jobs:
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     permissions:
       contents: write
       issues: write
@@ -56,9 +47,19 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # GH_ADMIN_PAT (workflow scope) を使うことで下流ワークフローが正常 trigger される
           github_token: ${{ secrets.GH_ADMIN_PAT || github.token }}
-          claude_args: "--allowed-tools 'Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)'"
+          claude_args: "--allowed-tools 'Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)' ${{ inputs.extra_claude_args }}"
+
+      - name: Notify failure
+        if: failure() && steps.claude.conclusion == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
+          ISSUE_NUM: ${{ github.event.issue.number || github.event.comment.issue.number }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue comment "$ISSUE_NUM" --repo "$REPO" \
+            --body "❌ Claude の実行が失敗しました。[ログを確認してください](${RUN_URL})"
 
       - name: Auto-create PR (if claude branch exists)
         id: pr-create
@@ -69,7 +70,6 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           REPO: ${{ github.repository }}
         run: |
-          # claude-code-action 終了後は git credential が revoke 済みのため gh API 経由でブランチを探す
           BRANCH=$(gh api "repos/${REPO}/branches" --paginate \
             --jq ".[] | select(.name | startswith(\"claude/issue-${ISSUE_NUM}-\")) | .name" \
             | head -1)
@@ -98,155 +98,45 @@ jobs:
           echo "Created PR #${PR_NUM} ($PR_URL)"
           echo "pr_number=${PR_NUM}" >> "$GITHUB_OUTPUT"
 
-      - name: CI check, auto-correct, and merge
-        # PR 作成直後に CI を待機し、失敗なら @claude 修正コメントを投稿。
-        # auto-merge ラベル付きなら CI 通過後にそのままマージ。
+      - name: Auto-merge (if labeled, after CI)
         if: |
           github.event_name == 'issues' &&
+          contains(github.event.issue.labels.*.name, 'auto-merge') &&
           steps.pr-create.outputs.pr_number != ''
         env:
           GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
+          GH_ADMIN_PAT_VALUE: ${{ secrets.GH_ADMIN_PAT }}
           PR_NUM: ${{ steps.pr-create.outputs.pr_number }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
-          MAX_ATTEMPTS: ${{ inputs.max_correction_attempts || 3 }}
-          AUTO_MERGE: ${{ contains(github.event.issue.labels.*.name, 'auto-merge') }}
-          HUMAN_REVIEWER: ${{ inputs.human_reviewer || 'info-mnml' }}
         run: |
-          echo "Waiting for CI to trigger on PR #${PR_NUM}..."
-          sleep 15
+          if [ -z "$GH_ADMIN_PAT_VALUE" ]; then
+            gh issue comment "$ISSUE_NUM" --repo "$REPO" \
+              --body '⚠️ GH_ADMIN_PAT が未設定のため auto-merge をスキップします。リポジトリのシークレットを確認してください。'
+            exit 0
+          fi
 
-          # CIチェックの有無を確認
-          CHECK_COUNT=$(gh pr checks "$PR_NUM" --json name --jq 'length' 2>/dev/null || echo 0)
+          echo "Waiting for CI checks to complete on PR #${PR_NUM}..."
+          sleep 10
+
+          CHECK_JSON=$(gh pr checks "$PR_NUM" --json name 2>/dev/null || echo '[]')
+          CHECK_COUNT=$(echo "$CHECK_JSON" | jq 'length' 2>/dev/null || echo 0)
           CHECK_COUNT=${CHECK_COUNT:-0}
 
           if [ "$CHECK_COUNT" -eq 0 ]; then
-            echo "No CI checks configured on this repo"
-            if [ "$AUTO_MERGE" = "true" ]; then
-              echo "Auto-merging (no CI)..."
-              gh pr merge "$PR_NUM" --squash --delete-branch
-            fi
-            exit 0
-          fi
-
-          echo "Waiting for ${CHECK_COUNT} CI check(s) to complete..."
-          if gh pr checks "$PR_NUM" --watch --interval 15 2>/dev/null; then
-            echo "CI passed!"
-            if [ "$AUTO_MERGE" = "true" ]; then
-              echo "Auto-merging..."
-              gh pr merge "$PR_NUM" --squash --delete-branch
-            fi
-            exit 0
-          fi
-
-          echo "CI failed. Checking auto-correction state..."
-
-          # 既存の自動修正コメント数をカウント（<!-- claude-auto-correction --> マーカー）
-          ATTEMPT_COUNT=$(gh api "repos/${REPO}/issues/${PR_NUM}/comments" \
-            --paginate \
-            --jq '[.[] | select(.body | test("<!-- claude-auto-correction -->"))] | length' \
-            2>/dev/null || echo 0)
-          ATTEMPT_COUNT=${ATTEMPT_COUNT:-0}
-
-          echo "Previous correction attempts: ${ATTEMPT_COUNT}/${MAX_ATTEMPTS}"
-
-          if [ "$ATTEMPT_COUNT" -ge "$MAX_ATTEMPTS" ]; then
-            echo "Max correction attempts reached. Requesting human review."
-            gh issue comment "$PR_NUM" --repo "$REPO" --body "⚠️ **自動修正の上限（${MAX_ATTEMPTS}回）に達しました**
-
-CIテストが ${MAX_ATTEMPTS} 回の自動修正後も失敗しています。人間のレビューが必要です。
-
-@${HUMAN_REVIEWER} このPRを確認して手動で修正またはクローズしてください。"
+            echo "No CI checks configured on this repo; proceeding with merge"
           else
-            NEXT_ATTEMPT=$((ATTEMPT_COUNT + 1))
-
-            # 失敗チェックの詳細を取得
-            FAIL_DETAILS=$(gh pr checks "$PR_NUM" --json name,state,link \
-              --jq '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | map("- [\(.name)](\(.link // "N/A"))") | join("\n")' \
-              2>/dev/null || echo "詳細はワークフローログを確認してください")
-
-            echo "Posting correction comment (attempt ${NEXT_ATTEMPT}/${MAX_ATTEMPTS})..."
-            gh issue comment "$PR_NUM" --repo "$REPO" --body "<!-- claude-auto-correction -->
-@claude CIテストが失敗しました（自動修正 ${NEXT_ATTEMPT}/${MAX_ATTEMPTS} 回目）。
-
-### 失敗したチェック
-${FAIL_DETAILS}
-
-コードを修正してコミット・プッシュしてください。"
-          fi
-          exit 1
-
-      - name: CI check after correction (issue_comment)
-        # @claude 修正コメントへの応答後に CI を待機し、次の修正コメントを投稿。
-        # 無限ループ防止: <!-- claude-auto-correction --> マーカーのコメント数で上限管理。
-        if: |
-          github.event_name == 'issue_comment' &&
-          contains(github.event.comment.body, '<!-- claude-auto-correction -->') &&
-          github.event.issue.pull_request != null
-        env:
-          GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
-          PR_NUM: ${{ github.event.issue.number }}
-          REPO: ${{ github.repository }}
-          MAX_ATTEMPTS: ${{ inputs.max_correction_attempts || 3 }}
-          HUMAN_REVIEWER: ${{ inputs.human_reviewer || 'info-mnml' }}
-        run: |
-          echo "Correction attempt detected. Waiting for new CI to trigger after Claude's fix..."
-          # Claude がプッシュしてから CI が起動するまでのラグを吸収
-          sleep 30
-
-          # CIチェックの有無を確認
-          CHECK_COUNT=$(gh pr checks "$PR_NUM" --json name --jq 'length' 2>/dev/null || echo 0)
-          CHECK_COUNT=${CHECK_COUNT:-0}
-
-          if [ "$CHECK_COUNT" -eq 0 ]; then
-            echo "No CI checks configured; skipping"
-            exit 0
+            if ! gh pr checks "$PR_NUM" --watch --interval 10; then
+              echo "CI failed; not merging PR #${PR_NUM}"
+              exit 1
+            fi
+            echo "All checks passed."
           fi
 
-          echo "Waiting for CI checks to complete..."
-          if gh pr checks "$PR_NUM" --watch --interval 15 2>/dev/null; then
-            echo "CI passed after correction! No further action needed."
-            exit 0
-          fi
-
-          echo "CI still failing after correction. Checking attempt count..."
-
-          # 既存の自動修正コメント数をカウント
-          ATTEMPT_COUNT=$(gh api "repos/${REPO}/issues/${PR_NUM}/comments" \
-            --paginate \
-            --jq '[.[] | select(.body | test("<!-- claude-auto-correction -->"))] | length' \
-            2>/dev/null || echo 0)
-          ATTEMPT_COUNT=${ATTEMPT_COUNT:-0}
-
-          echo "Correction attempts so far: ${ATTEMPT_COUNT}/${MAX_ATTEMPTS}"
-
-          if [ "$ATTEMPT_COUNT" -ge "$MAX_ATTEMPTS" ]; then
-            echo "Max correction attempts reached. Requesting human review."
-            gh issue comment "$PR_NUM" --repo "$REPO" --body "⚠️ **自動修正の上限（${MAX_ATTEMPTS}回）に達しました**
-
-CIテストが ${MAX_ATTEMPTS} 回の自動修正後も失敗しています。人間のレビューが必要です。
-
-@${HUMAN_REVIEWER} このPRを確認して手動で修正またはクローズしてください。"
-          else
-            NEXT_ATTEMPT=$((ATTEMPT_COUNT + 1))
-
-            FAIL_DETAILS=$(gh pr checks "$PR_NUM" --json name,state,link \
-              --jq '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | map("- [\(.name)](\(.link // "N/A"))") | join("\n")' \
-              2>/dev/null || echo "詳細はワークフローログを確認してください")
-
-            echo "Posting correction comment (attempt ${NEXT_ATTEMPT}/${MAX_ATTEMPTS})..."
-            gh issue comment "$PR_NUM" --repo "$REPO" --body "<!-- claude-auto-correction -->
-@claude CIテストが失敗しました（自動修正 ${NEXT_ATTEMPT}/${MAX_ATTEMPTS} 回目）。
-
-### 失敗したチェック
-${FAIL_DETAILS}
-
-コードを修正してコミット・プッシュしてください。"
-          fi
-          exit 1
+          echo "Squash merging PR #${PR_NUM}"
+          gh pr merge "$PR_NUM" --squash --delete-branch
 
   close-issue-on-merge:
-    # PR が merge されたら、PR body の "Closes #N" またはブランチ名から Issue を探して閉じる。
-    # GitHub Actions が作成した PR は "Closes #N" の auto-link が効かないため明示的にクローズする。
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
@@ -263,7 +153,6 @@ ${FAIL_DETAILS}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
         run: |
-          # PR body の "Closes #N" を優先、なければブランチ名 claude/issue-N-* から抽出
           ISSUE_NUM=$(printf '%s' "$PR_BODY" | grep -oP '(?i)(?<=closes #)\d+' | head -1)
           if [ -z "$ISSUE_NUM" ]; then
             ISSUE_NUM=$(printf '%s' "$HEAD_REF" | grep -oP '(?<=issue-)\d+')
@@ -288,7 +177,6 @@ ${FAIL_DETAILS}
           fi
 
   retry-merge:
-    # PR コメントに /retry-merge を投稿すると、失敗した auto-merge を再実行する。
     if: |
       github.event_name == 'issue_comment' &&
       contains(github.event.comment.body, '/retry-merge') &&
@@ -323,5 +211,3 @@ ${FAIL_DETAILS}
 
           echo "Squash merging PR #${PR_NUM}"
           gh pr merge "$PR_NUM" --squash --delete-branch
-
-
