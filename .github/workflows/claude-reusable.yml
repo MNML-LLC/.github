@@ -25,6 +25,10 @@ on:
         required: true
       GH_ADMIN_PAT:
         required: false
+      SLACK_BOT_TOKEN:
+        required: false
+      SLACK_CHANNEL:
+        required: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -256,6 +260,8 @@ ${FAIL_DETAILS}
           PR_BODY: ${{ github.event.pull_request.body }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           REPO: ${{ github.repository }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
         run: |
           # PR body の "Closes #N" を優先、なければブランチ名 claude/issue-N-* から抽出
           ISSUE_NUM=$(printf '%s' "$PR_BODY" | grep -oP '(?i)(?<=closes #)\d+' | head -1)
@@ -269,6 +275,17 @@ ${FAIL_DETAILS}
           echo "Closing issue #${ISSUE_NUM} (merged by PR #${PR_NUM})"
           gh issue close "$ISSUE_NUM" --repo "$REPO" \
             --comment "PR #${PR_NUM} がマージされたため自動クローズしました。"
+
+          # mnml-agents Issue クローズを platform M層 へ Slack 通知
+          if [[ "$REPO" == *"mnml-agents"* ]] && [ -n "$SLACK_BOT_TOKEN" ] && [ -n "$SLACK_CHANNEL" ]; then
+            MSG="@platform: Issue #${ISSUE_NUM} がクローズされました (PR #${PR_NUM})。次のアクションを確認・実行してください。"
+            curl -s -X POST \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data "{\"channel\":\"${SLACK_CHANNEL}\",\"text\":\"${MSG}\"}" \
+              https://slack.com/api/chat.postMessage > /dev/null
+            echo "Slack 通知送信済み (Issue #${ISSUE_NUM})"
+          fi
 
   retry-merge:
     # PR コメントに /retry-merge を投稿すると、失敗した auto-merge を再実行する。
@@ -306,4 +323,5 @@ ${FAIL_DETAILS}
 
           echo "Squash merging PR #${PR_NUM}"
           gh pr merge "$PR_NUM" --squash --delete-branch
+
 
