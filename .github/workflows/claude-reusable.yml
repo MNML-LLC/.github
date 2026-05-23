@@ -77,9 +77,7 @@ jobs:
             --base main \
             --head "$BRANCH" \
             --title "$ISSUE_TITLE" \
-            --body "Closes #${ISSUE_NUM}
-
-Generated with [Claude Code](https://claude.ai/code)")
+            --body "Closes #${ISSUE_NUM}")
           PR_NUM=$(echo "$PR_URL" | rev | cut -d/ -f1 | rev)
           echo "Created PR #${PR_NUM} ($PR_URL)"
           echo "pr_number=${PR_NUM}" >> "$GITHUB_OUTPUT"
