@@ -26,7 +26,6 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,10 +52,12 @@ jobs:
             echo "## 参考情報（自動注入）"
             echo ""
             echo "### 直近のマージ済みPR"
-            printf '%s\n' "$PAST_PRS"
+            printf '%s
+' "$PAST_PRS"
             echo ""
             echo "### プロジェクト規約（CLAUDE.md 抜粋）"
-            printf '%s\n' "$CLAUDE_MD"
+            printf '%s
+' "$CLAUDE_MD"
             echo "CONTEXT_EOF"
           } >> "$GITHUB_OUTPUT"
 
