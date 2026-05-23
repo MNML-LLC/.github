@@ -26,7 +26,6 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,9 +39,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # GH_ADMIN_PAT (workflow scope) を使うことで下流ワークフローが正常 trigger される
           github_token: ${{ secrets.GH_ADMIN_PAT || github.token }}
-          claude_args: >-
-            --allowed-tools
-            "Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)"
+          claude_args: "--allowed-tools 'Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)'"
 
       - name: Auto-create PR (if claude branch exists)
         id: pr-create
