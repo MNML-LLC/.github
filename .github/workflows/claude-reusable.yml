@@ -32,46 +32,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Build context for Claude
-        id: context
-        env:
-          GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
-          REPO: ${{ github.repository }}
-          ISSUE_NUM: ${{ github.event.issue.number }}
-        run: |
-          # 直近マージ済みPR（10件）のタイトルとURL
-          PAST_PRS=$(gh pr list --repo "$REPO" --state merged --limit 10 \
-            --json title,url --jq '.[] | "- " + .title + " (" + .url + ")"' 2>/dev/null || echo "なし")
-
-          # CLAUDE.md が存在すれば先頭100行を取得（長すぎる場合は省略）
-          CLAUDE_MD=$(head -100 CLAUDE.md 2>/dev/null || echo "なし")
-
-          # コンテキストを GITHUB_OUTPUT へ複数行で出力（heredoc 形式）
-          {
-            echo "context_content<<CONTEXT_EOF"
-            echo "## 参考情報（自動注入）"
-            echo ""
-            echo "### 直近のマージ済みPR"
-            printf '%s
-' "$PAST_PRS"
-            echo ""
-            echo "### プロジェクト規約（CLAUDE.md 抜粋）"
-            printf '%s
-' "$CLAUDE_MD"
-            echo "CONTEXT_EOF"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # GH_ADMIN_PAT (workflow scope) を使うことで下流ワークフローが正常 trigger される
           github_token: ${{ secrets.GH_ADMIN_PAT || github.token }}
-          prompt: ${{ steps.context.outputs.context_content }}
-          claude_args: >-
-            --allowed-tools
-            "Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)"
+          claude_args: "--allowed-tools 'Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)'"
 
       - name: Auto-create PR (if claude branch exists)
         id: pr-create
@@ -82,7 +49,6 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           REPO: ${{ github.repository }}
         run: |
-          # claude-code-action 終了後は git credential が revoke 済みのため gh API 経由でブランチを探す
           BRANCH=$(gh api "repos/${REPO}/branches" --paginate \
             --jq ".[] | select(.name | startswith(\"claude/issue-${ISSUE_NUM}-\")) | .name" \
             | head -1)
@@ -106,9 +72,7 @@ jobs:
             --base main \
             --head "$BRANCH" \
             --title "$ISSUE_TITLE" \
-            --body "Closes #${ISSUE_NUM}
-
-Generated with [Claude Code](https://claude.ai/code)")
+            --body "Closes #${ISSUE_NUM}")
           PR_NUM=$(echo "$PR_URL" | rev | cut -d/ -f1 | rev)
           echo "Created PR #${PR_NUM} ($PR_URL)"
           echo "pr_number=${PR_NUM}" >> "$GITHUB_OUTPUT"
@@ -119,16 +83,12 @@ Generated with [Claude Code](https://claude.ai/code)")
           contains(github.event.issue.labels.*.name, 'auto-merge') &&
           steps.pr-create.outputs.pr_number != ''
         env:
-          # GITHUB_TOKEN だと merge イベントが trigger されず close-issue-on-merge が動かないため
-          # 必ず GH_ADMIN_PAT (workflow scope 付き) で merge する
           GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
           PR_NUM: ${{ steps.pr-create.outputs.pr_number }}
         run: |
           echo "Waiting for CI checks to complete on PR #${PR_NUM}..."
-          # PR 作成 → workflow trigger までのラグを吸収
           sleep 10
 
-          # CIチェックが0件のリポでも正常動作させる (gh pr checks --watch はゼロ件で exit 1)
           CHECK_JSON=$(gh pr checks "$PR_NUM" --json name 2>/dev/null || echo '[]')
           CHECK_COUNT=$(echo "$CHECK_JSON" | jq 'length' 2>/dev/null || echo 0)
           CHECK_COUNT=${CHECK_COUNT:-0}
@@ -147,8 +107,6 @@ Generated with [Claude Code](https://claude.ai/code)")
           gh pr merge "$PR_NUM" --squash --delete-branch
 
   close-issue-on-merge:
-    # PR が merge されたら、PR body の "Closes #N" またはブランチ名から Issue を探して閉じる。
-    # GitHub Actions が作成した PR は "Closes #N" の auto-link が効かないため明示的にクローズする。
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
@@ -163,7 +121,6 @@ Generated with [Claude Code](https://claude.ai/code)")
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           REPO: ${{ github.repository }}
         run: |
-          # PR body の "Closes #N" を優先、なければブランチ名 claude/issue-N-* から抽出
           ISSUE_NUM=$(printf '%s' "$PR_BODY" | grep -oP '(?i)(?<=closes #)\d+' | head -1)
           if [ -z "$ISSUE_NUM" ]; then
             ISSUE_NUM=$(printf '%s' "$HEAD_REF" | grep -oP '(?<=issue-)\d+')
@@ -177,7 +134,6 @@ Generated with [Claude Code](https://claude.ai/code)")
             --comment "PR #${PR_NUM} がマージされたため自動クローズしました。"
 
   retry-merge:
-    # PR コメントに /retry-merge を投稿すると、失敗した auto-merge を再実行する。
     if: |
       github.event_name == 'issue_comment' &&
       contains(github.event.comment.body, '/retry-merge') &&
