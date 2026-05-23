@@ -1,0 +1,55 @@
+name: Autonomous Repository Scan
+on:
+  schedule:
+    - cron: '0 0 * * 1'  # 毎週月曜0時UTC（日本時間9時）
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GH_ADMIN_PAT }}
+    steps:
+      - name: Scan all repos and create issues
+        run: |
+          REPOS="mnml-agents mnml-tools the-botch shift-scheduler-ai spotify-playlist-organizer mnml-web events sns_manage consulting cdp-dashboard issues"
+
+          for REPO in $REPOS; do
+            # 1. CIが落ちているオープンPRを検出
+            FAILING_PRS=$(gh pr list --repo "MNML-LLC/$REPO" --state open \
+              --json number,title,statusCheckRollup \
+              --jq '.[] | select(.statusCheckRollup | length > 0) | select(.statusCheckRollup | any(.conclusion == "FAILURE" or .state == "FAILURE")) | "- #" + (.number|tostring) + " " + .title' \
+              2>/dev/null || echo "")
+
+            if [ -n "$FAILING_PRS" ]; then
+              EXISTING=$(gh issue list --repo "MNML-LLC/mnml-agents" --state open \
+                --search "[scan] $REPO: CI failing PRs detected in:title" \
+                --json number --jq 'length' 2>/dev/null || echo "0")
+              if [ "$EXISTING" = "0" ]; then
+                gh issue create --repo "MNML-LLC/mnml-agents" \
+                  --title "[scan] $REPO: CI failing PRs detected" \
+                  --body "$(printf '以下のPRでCIが落ちています。確認・修正してください。\n\n%s\n\n@claude 各PRのCI失敗を修正してください。' "$FAILING_PRS")" \
+                  --label auto-merge
+              fi
+            fi
+
+            # 2. 30日以上更新のないオープンPRを検出（stale PR）
+            STALE_PRS=$(gh pr list --repo "MNML-LLC/$REPO" --state open \
+              --json number,title,updatedAt \
+              --jq '.[] | select((.updatedAt | fromdateiso8601) < (now - 86400*30)) | "- #" + (.number|tostring) + " " + .title' \
+              2>/dev/null || echo "")
+
+            if [ -n "$STALE_PRS" ]; then
+              EXISTING=$(gh issue list --repo "MNML-LLC/mnml-agents" --state open \
+                --search "[scan] $REPO: stale PRs (30d+) in:title" \
+                --json number --jq 'length' 2>/dev/null || echo "0")
+              if [ "$EXISTING" = "0" ]; then
+                gh issue create --repo "MNML-LLC/mnml-agents" \
+                  --title "[scan] $REPO: stale PRs (30d+)" \
+                  --body "$(printf '30日以上放置されているPRがあります。マージ・クローズを判断してください。\n\n%s' "$STALE_PRS")"
+              fi
+            fi
+          done
