@@ -165,9 +165,9 @@ jobs:
           gh issue close "$ISSUE_NUM" --repo "$REPO" \
             --comment "PR #${PR_NUM} がマージされたため自動クローズしました。"
 
-          # mnml-agents Issue クローズを platform M層 へ Slack 通知
-          if [[ "$REPO" == *"mnml-agents"* ]] && [ -n "$SLACK_BOT_TOKEN" ] && [ -n "$SLACK_CHANNEL" ]; then
-            MSG="@platform: Issue #${ISSUE_NUM} がクローズされました (PR #${PR_NUM})。次のアクションを確認・実行してください。"
+          # 全リポ対象でPRマージをSlack通知
+          if [ -n "$SLACK_BOT_TOKEN" ] && [ -n "$SLACK_CHANNEL" ]; then
+            MSG="✅ *PRマージ完了*: PR #${PR_NUM} → Issue #${ISSUE_NUM} クローズ (${REPO})"
             curl -s -X POST \
               -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
               -H "Content-Type: application/json" \
@@ -211,3 +211,50 @@ jobs:
 
           echo "Squash merging PR #${PR_NUM}"
           gh pr merge "$PR_NUM" --squash --delete-branch
+
+  notify-pr-opened:
+    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Slack通知 (PR作成)
+        if: ${{ secrets.SLACK_BOT_TOKEN != '' && secrets.SLACK_CHANNEL != '' }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+        run: |
+          MSG="🔔 *PRが作成されました*: <${PR_URL}|#${PR_NUM} ${PR_TITLE}> (${REPO})"
+          curl -s -X POST \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "{\"channel\":\"${SLACK_CHANNEL}\",\"text\":\"${MSG}\"}" \
+            https://slack.com/api/chat.postMessage
+
+  notify-ci-failure:
+    if: failure() && github.event_name == 'pull_request'
+    needs: [claude]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Slack通知 (CI失敗)
+        if: ${{ secrets.SLACK_BOT_TOKEN != '' && secrets.SLACK_CHANNEL != '' }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+        run: |
+          MSG="❌ *CI失敗*: <${PR_URL}|#${PR_NUM} ${PR_TITLE}> (${REPO}) — M層レビューが必要です"
+          curl -s -X POST \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "{\"channel\":\"${SLACK_CHANNEL}\",\"text\":\"${MSG}\"}" \
+            https://slack.com/api/chat.postMessage
