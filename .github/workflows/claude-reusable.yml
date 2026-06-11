@@ -38,6 +38,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Inject MNML company policy into CLAUDE.md
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
+        run: |
+          touch CLAUDE.md
+          POLICY=$(gh api repos/MNML-LLC/mnml-agents/contents/CLAUDE.md \
+            --jq '.content' 2>/dev/null | base64 -d 2>/dev/null) || true
+          if [ -n "$POLICY" ]; then
+            printf '\n\n---\n# MNML 会社方針（自動注入）\n\n%s\n' "$POLICY" >> CLAUDE.md
+            echo "✓ Company policy injected ($(echo "$POLICY" | wc -l) lines)"
+          else
+            echo "⚠ Could not fetch company policy; continuing without injection"
+          fi
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
