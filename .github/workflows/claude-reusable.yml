@@ -38,6 +38,31 @@ jobs:
         with:
           fetch-depth: 0
 
+
+      - name: Inject MNML company policy and dev rules into CLAUDE.md
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
+        run: |
+          touch CLAUDE.md
+          # 会社方針 (mnml-agents root CLAUDE.md)
+          POLICY=$(gh api repos/MNML-LLC/mnml-agents/contents/CLAUDE.md \
+            --jq '.content' 2>/dev/null | base64 -d 2>/dev/null) || true
+          # 開発ルール (mnml-agents agents/CLAUDE.md)
+          DEV_RULES=$(gh api repos/MNML-LLC/mnml-agents/contents/agents/CLAUDE.md \
+            --jq '.content' 2>/dev/null | base64 -d 2>/dev/null) || true
+          {
+            printf '\n\n---\n# MNML 会社方針（自動注入）\n\n'
+            printf '%s\n' "$POLICY"
+            printf '\n---\n# MNML 開発ルール（自動注入）\n\n'
+            printf '%s\n' "$DEV_RULES"
+          } >> CLAUDE.md
+          LINES=$(wc -l < CLAUDE.md)
+          if [ "$LINES" -gt 5 ]; then
+            echo "✓ Company policy and dev rules injected (${LINES} total lines in CLAUDE.md)"
+          else
+            echo "⚠ Injection may have failed; continuing"
+          fi
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
