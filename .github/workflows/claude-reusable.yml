@@ -126,17 +126,10 @@ jobs:
           steps.pr-create.outputs.pr_number != ''
         env:
           GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
-          GH_ADMIN_PAT_VALUE: ${{ secrets.GH_ADMIN_PAT }}
           PR_NUM: ${{ steps.pr-create.outputs.pr_number }}
           ISSUE_NUM: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
-          if [ -z "$GH_ADMIN_PAT_VALUE" ]; then
-            gh issue comment "$ISSUE_NUM" --repo "$REPO" \
-              --body '⚠️ GH_ADMIN_PAT が未設定のため auto-merge をスキップします。リポジトリのシークレットを確認してください。'
-            exit 0
-          fi
-
           echo "Waiting for CI checks to complete on PR #${PR_NUM}..."
           sleep 10
 
