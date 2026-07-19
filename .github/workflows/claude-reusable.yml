@@ -84,16 +84,22 @@ jobs:
 
       - name: Auto-create PR (if claude branch exists)
         id: pr-create
-        if: github.event_name == 'issues'
+        # Issue コンテキスト (Issue 新規作成 or 既存 Issue へのコメント) でのみ実行。
+        # PR へのコメント (issue.pull_request が存在) は既存 PR ブランチへの push なので対象外。
+        if: |
+          github.event_name == 'issues' ||
+          (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
         env:
           GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
           ISSUE_NUM: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           REPO: ${{ github.repository }}
         run: |
+          # 再委譲で同一 Issue のブランチが複数ある場合に備え、
+          # タイムスタンプ suffix の辞書順で最新のブランチを選ぶ
           BRANCH=$(gh api "repos/${REPO}/branches" --paginate \
             --jq ".[] | select(.name | startswith(\"claude/issue-${ISSUE_NUM}-\")) | .name" \
-            | head -1)
+            | sort -r | head -1)
 
           if [ -z "$BRANCH" ]; then
             echo "No claude branch for issue #${ISSUE_NUM}, skipping PR creation"
@@ -102,10 +108,19 @@ jobs:
           fi
           echo "Found branch: $BRANCH"
 
-          EXISTING=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || echo "")
+          EXISTING=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open \
+            --json number --jq '.[0].number' 2>/dev/null || echo "")
           if [ -n "$EXISTING" ]; then
             echo "PR already exists: #$EXISTING"
             echo "pr_number=$EXISTING" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # main に対して差分のない残骸ブランチ (マージ済み等) では PR を作らない
+          AHEAD=$(gh api "repos/${REPO}/compare/main...${BRANCH}" --jq '.ahead_by' 2>/dev/null || echo 0)
+          if [ "${AHEAD:-0}" -eq 0 ]; then
+            echo "Branch $BRANCH has no commits ahead of main; skipping PR creation"
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -119,9 +134,14 @@ jobs:
           echo "Created PR #${PR_NUM} ($PR_URL)"
           echo "pr_number=${PR_NUM}" >> "$GITHUB_OUTPUT"
 
+          # 作成した PR URL を Issue にコメントで通知
+          gh issue comment "$ISSUE_NUM" --repo "$REPO" \
+            --body "🔀 PR を自動作成しました: ${PR_URL}"
+
       - name: Auto-merge (if labeled, after CI)
         if: |
-          github.event_name == 'issues' &&
+          (github.event_name == 'issues' ||
+           (github.event_name == 'issue_comment' && !github.event.issue.pull_request)) &&
           contains(github.event.issue.labels.*.name, 'auto-merge') &&
           steps.pr-create.outputs.pr_number != ''
         env:
