@@ -38,6 +38,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      # PRコメント経由の実行では claude-code-action が PR ブランチへ checkout する。
+      # 注入で dirty になった状態で別ブランチへ checkout すると失敗するため、
+      # 注入より先に PR ブランチへ切り替えておく（action 内の checkout は no-op になる）。
+      - name: Checkout PR branch (PR comment runs)
+        if: |
+          (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) ||
+          github.event_name == 'pull_request_review_comment'
+        run: |
+          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+          if [[ -n "$PR_BRANCH" ]]; then
+            git fetch origin "$PR_BRANCH"
+            git checkout "$PR_BRANCH"
+          fi
 
       - name: Inject MNML company policy and dev rules into CLAUDE.md
         env:
