@@ -173,25 +173,45 @@ jobs:
           ISSUE_NUM: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
-          echo "Waiting for CI checks to complete on PR #${PR_NUM}..."
-          sleep 10
+          echo "Waiting for CI checks to register on PR #${PR_NUM}..."
 
-          CHECK_JSON=$(gh pr checks "$PR_NUM" --json name 2>/dev/null || echo '[]')
-          CHECK_COUNT=$(echo "$CHECK_JSON" | jq 'length' 2>/dev/null || echo 0)
-          CHECK_COUNT=${CHECK_COUNT:-0}
+          # CI未登録レース対策 (#15): チェック件数が0の間は最大90秒リトライして待つ。
+          # PR作成直後は checks が未登録なことがあり、即マージすると無検証マージになる。
+          # 90秒待っても0件のときだけ本当にCI無しと判定する。
+          CHECK_COUNT=0
+          for i in $(seq 1 10); do
+            CHECK_JSON=$(gh pr checks "$PR_NUM" --repo "$REPO" --json name 2>/dev/null || echo '[]')
+            CHECK_COUNT=$(echo "$CHECK_JSON" | jq 'length' 2>/dev/null || echo 0)
+            CHECK_COUNT=${CHECK_COUNT:-0}
+            if [ "$CHECK_COUNT" -gt 0 ]; then
+              break
+            fi
+            if [ "$i" -lt 10 ]; then
+              echo "No checks registered yet (attempt ${i}/10); waiting 10s..."
+              sleep 10
+            fi
+          done
 
           if [ "$CHECK_COUNT" -eq 0 ]; then
-            echo "No CI checks configured on this repo; proceeding with merge"
+            echo "No CI checks configured on this repo after ~90s; proceeding with merge"
           else
-            if ! gh pr checks "$PR_NUM" --watch --interval 10; then
+            if ! gh pr checks "$PR_NUM" --repo "$REPO" --watch --interval 10; then
               echo "CI failed; not merging PR #${PR_NUM}"
               exit 1
             fi
             echo "All checks passed."
           fi
 
+          # マージ失敗時の無言滞留対策 (#15): コンフリクト等で失敗したら
+          # 失敗内容をPRにコメントして可視化し、@claude に復旧を依頼する。
           echo "Squash merging PR #${PR_NUM}"
-          gh pr merge "$PR_NUM" --squash --delete-branch
+          if ! MERGE_OUT=$(gh pr merge "$PR_NUM" --repo "$REPO" --squash --delete-branch 2>&1); then
+            echo "Auto-merge failed for PR #${PR_NUM}:"
+            printf '%s\n' "$MERGE_OUT"
+            gh pr comment "$PR_NUM" --repo "$REPO" --body "$(printf '⚠️ auto-merge に失敗しました（無言滞留防止 #15）。\n\n```\n%s\n```\n\n@claude origin/main を取り込んでコンフリクトを解消し push してください。' "$MERGE_OUT")"
+            exit 1
+          fi
+          echo "Merged PR #${PR_NUM}"
 
   close-issue-on-merge:
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
@@ -235,23 +255,41 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
           PR_NUM: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
         run: |
           echo "Retrying auto-merge for PR #${PR_NUM}..."
-          sleep 10
 
-          CHECK_JSON=$(gh pr checks "$PR_NUM" --json name 2>/dev/null || echo '[]')
-          CHECK_COUNT=$(echo "$CHECK_JSON" | jq 'length' 2>/dev/null || echo 0)
-          CHECK_COUNT=${CHECK_COUNT:-0}
+          # CI未登録レース対策 (#15): チェック件数が0の間は最大90秒リトライして待つ。
+          CHECK_COUNT=0
+          for i in $(seq 1 10); do
+            CHECK_JSON=$(gh pr checks "$PR_NUM" --repo "$REPO" --json name 2>/dev/null || echo '[]')
+            CHECK_COUNT=$(echo "$CHECK_JSON" | jq 'length' 2>/dev/null || echo 0)
+            CHECK_COUNT=${CHECK_COUNT:-0}
+            if [ "$CHECK_COUNT" -gt 0 ]; then
+              break
+            fi
+            if [ "$i" -lt 10 ]; then
+              echo "No checks registered yet (attempt ${i}/10); waiting 10s..."
+              sleep 10
+            fi
+          done
 
           if [ "$CHECK_COUNT" -eq 0 ]; then
-            echo "No CI checks configured on this repo; proceeding with merge"
+            echo "No CI checks configured on this repo after ~90s; proceeding with merge"
           else
-            if ! gh pr checks "$PR_NUM" --watch --interval 10; then
+            if ! gh pr checks "$PR_NUM" --repo "$REPO" --watch --interval 10; then
               echo "CI failed; not merging PR #${PR_NUM}"
               exit 1
             fi
             echo "All checks passed."
           fi
 
+          # マージ失敗時の無言滞留対策 (#15): 失敗内容をPRにコメントして可視化する。
           echo "Squash merging PR #${PR_NUM}"
-          gh pr merge "$PR_NUM" --squash --delete-branch
+          if ! MERGE_OUT=$(gh pr merge "$PR_NUM" --repo "$REPO" --squash --delete-branch 2>&1); then
+            echo "Retry auto-merge failed for PR #${PR_NUM}:"
+            printf '%s\n' "$MERGE_OUT"
+            gh pr comment "$PR_NUM" --repo "$REPO" --body "$(printf '⚠️ /retry-merge も失敗しました（無言滞留防止 #15）。\n\n```\n%s\n```\n\n@claude origin/main を取り込んでコンフリクトを解消し push してください。' "$MERGE_OUT")"
+            exit 1
+          fi
+          echo "Merged PR #${PR_NUM}"
