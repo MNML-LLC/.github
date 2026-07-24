@@ -38,6 +38,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      # GITHUB_TOKEN / GitHub App token では .github/workflows/ 配下を含む push が
+      # 必ず拒否される (permissions: に `workflows: write` というキーは存在せず、
+      # 書くとワークフロー自体が構文エラーになる)。回避には workflow スコープ付き
+      # classic PAT (GH_ADMIN_PAT) が必須 (Issue #882)。
+      - name: Warn if GH_ADMIN_PAT is missing
+        env:
+          HAS_PAT: ${{ secrets.GH_ADMIN_PAT != '' }}
+        run: |
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::GH_ADMIN_PAT が未設定のため github.token にフォールバックします。.github/workflows/ 配下のファイルを含む push は拒否されます (Issue #882)"
+          fi
+
       # PRコメント経由の実行では claude-code-action が PR ブランチへ checkout する。
       # 注入で dirty になった状態で別ブランチへ checkout すると失敗するため、
       # 注入より先に PR ブランチへ切り替えておく（action 内の checkout は no-op になる）。
@@ -66,25 +78,42 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
         run: |
-          touch CLAUDE.md
           # 会社方針 (mnml-agents root CLAUDE.md)
           POLICY=$(gh api repos/MNML-LLC/mnml-agents/contents/CLAUDE.md \
             --jq '.content' 2>/dev/null | base64 -d 2>/dev/null) || true
           # 開発ルール (mnml-agents agents/CLAUDE.md)
           DEV_RULES=$(gh api repos/MNML-LLC/mnml-agents/contents/agents/CLAUDE.md \
             --jq '.content' 2>/dev/null | base64 -d 2>/dev/null) || true
+          # 取得失敗等でコンテンツが空のセクションはヘッダーごとスキップする。
+          # 空の「（自動注入）」見出しだけが CLAUDE.md に残り、ベンダーの
+          # コミットに混入する再発を防ぐ (Issue #1062, events PR #85)。
+          POLICY_OK=false
+          DEV_RULES_OK=false
+          if [ -n "${POLICY//[[:space:]]/}" ]; then POLICY_OK=true; fi
+          if [ -n "${DEV_RULES//[[:space:]]/}" ]; then DEV_RULES_OK=true; fi
+          if [ "$POLICY_OK" = false ] && [ "$DEV_RULES_OK" = false ]; then
+            echo "::warning::Company policy and dev rules are both empty; skipping injection (CLAUDE.md left untouched)"
+            exit 0
+          fi
+          if [ "$POLICY_OK" = false ]; then
+            echo "::warning::Company policy is empty; skipping its section"
+          fi
+          if [ "$DEV_RULES_OK" = false ]; then
+            echo "::warning::Dev rules are empty; skipping its section"
+          fi
+          touch CLAUDE.md
           {
-            printf '\n\n---\n# MNML 会社方針（自動注入）\n\n'
-            printf '%s\n' "$POLICY"
-            printf '\n---\n# MNML 開発ルール（自動注入）\n\n'
-            printf '%s\n' "$DEV_RULES"
+            if [ "$POLICY_OK" = true ]; then
+              printf '\n\n---\n# MNML 会社方針（自動注入）\n\n'
+              printf '%s\n' "$POLICY"
+            fi
+            if [ "$DEV_RULES_OK" = true ]; then
+              printf '\n---\n# MNML 開発ルール（自動注入）\n\n'
+              printf '%s\n' "$DEV_RULES"
+            fi
           } >> CLAUDE.md
           LINES=$(wc -l < CLAUDE.md)
-          if [ "$LINES" -gt 5 ]; then
-            echo "✓ Company policy and dev rules injected (${LINES} total lines in CLAUDE.md)"
-          else
-            echo "⚠ Injection may have failed; continuing"
-          fi
+          echo "✓ Injected sections (policy=${POLICY_OK}, dev_rules=${DEV_RULES_OK}, ${LINES} total lines in CLAUDE.md)"
 
       - name: Run Claude Code
         id: claude
