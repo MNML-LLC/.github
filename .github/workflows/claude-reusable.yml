@@ -259,7 +259,7 @@ jobs:
         run: |
           ISSUE_NUM=$(printf '%s' "$PR_BODY" | grep -oP '(?i)(?<=closes #)\d+' | head -1)
           if [ -z "$ISSUE_NUM" ]; then
-            ISSUE_NUM=$(printf '%s' "$HEAD_REF" | grep -oP '(?<=issue-)\d+')
+            ISSUE_NUM=$(printf '%s' "$HEAD_REF" | grep -oP '(?<=issue-)\d+' || true)
           fi
           if [ -z "$ISSUE_NUM" ]; then
             echo "No linked issue found; skipping"
