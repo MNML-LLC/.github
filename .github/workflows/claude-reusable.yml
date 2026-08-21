@@ -115,6 +115,63 @@ jobs:
           LINES=$(wc -l < CLAUDE.md)
           echo "✓ Injected sections (policy=${POLICY_OK}, dev_rules=${DEV_RULES_OK}, ${LINES} total lines in CLAUDE.md)"
 
+      # 実装クラフト3スキルを first-party (MNML-LLC/mnml-agents) から sha ピン止めで取得し、
+      # ランナーの .claude/skills/ に展開する (設計: mnml-agents#1125 案D / Issue #19)。
+      # - 取得は上の CLAUDE.md 注入と同じ gh api の信頼境界を使う (first-party のみ)。
+      #   external marketplace からの実行時取得は禁止 (供給網リスク対策)。
+      # - claude-code-action 起動"前"の素の bash ステップで書き込む
+      #   (エージェントセッション内書き込みガードの対象外)。
+      # - 取得失敗は graceful skip (warning を出しつつベンダー実行は継続)。
+      # - 既存ディレクトリは上書きで冪等。
+      - name: Fetch MNML implementation-craft skills (sha-pinned, first-party)
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
+        run: |
+          # ピン止め sha (更新時はこの定数を変える sha 変更 PR の差分レビューを経る)。
+          # 2026-08-21 時点の mnml-agents origin/main HEAD。設計時 sha 8a2e1fc5 と
+          # 当該3スキルの SKILL.md blob は同一 (差分は PROVENANCE.md 追加のみ)。
+          SKILLS_SHA="c290e64d07841e561773d2c8c0949e2b8ffddf1c"
+          SKILLS="test-driven-development executing-plans subagent-driven-development"
+
+          TARBALL="$(mktemp)"
+          if ! gh api "repos/MNML-LLC/mnml-agents/tarball/${SKILLS_SHA}" > "$TARBALL" 2>/dev/null; then
+            echo "::warning::Failed to fetch mnml-agents tarball @ ${SKILLS_SHA}; skipping skill injection (vendor run continues)"
+            rm -f "$TARBALL"
+            exit 0
+          fi
+
+          EXTRACT_DIR="$(mktemp -d)"
+          if ! tar -xzf "$TARBALL" -C "$EXTRACT_DIR" 2>/dev/null; then
+            echo "::warning::Failed to extract mnml-agents tarball; skipping skill injection (vendor run continues)"
+            rm -rf "$TARBALL" "$EXTRACT_DIR"
+            exit 0
+          fi
+
+          # tarball のトップは <owner>-<repo>-<shortsha>/ の単一ディレクトリ
+          ROOT="$(find "$EXTRACT_DIR" -maxdepth 1 -mindepth 1 -type d | head -1)"
+          SRC_BASE="${ROOT}/docs/skills-drafts"
+
+          mkdir -p .claude/skills
+          INJECTED=0
+          for s in $SKILLS; do
+            if [ -d "${SRC_BASE}/${s}" ]; then
+              rm -rf ".claude/skills/${s}"          # 冪等: 既存を上書き
+              cp -R "${SRC_BASE}/${s}" ".claude/skills/${s}"
+              echo "✓ Injected skill: ${s}"
+              INJECTED=$((INJECTED + 1))
+            else
+              echo "::warning::Skill dir not found in tarball: ${s} (skipped)"
+            fi
+          done
+
+          rm -rf "$TARBALL" "$EXTRACT_DIR"
+
+          if [ "$INJECTED" -eq 0 ]; then
+            echo "::warning::No implementation-craft skills injected; vendor run continues without them"
+          else
+            echo "✓ ${INJECTED} implementation-craft skill(s) injected into .claude/skills/ @ ${SKILLS_SHA}"
+          fi
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
