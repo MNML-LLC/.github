@@ -115,6 +115,52 @@ jobs:
           LINES=$(wc -l < CLAUDE.md)
           echo "✓ Injected sections (policy=${POLICY_OK}, dev_rules=${DEV_RULES_OK}, ${LINES} total lines in CLAUDE.md)"
 
+      - name: Install first-party implementation skills (vendor session)
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_PAT || github.token }}
+        run: |
+          # ファーストパーティスキルをベンダー実行環境にインストールする
+          # 取得元は mnml-agents のみ。blob sha をピン止めし、不一致は graceful skip
+          # 詳細設計: Issue #1125 / docs/skills-drafts/PROVENANCE.md
+
+          install_file() {
+            local skill="$1" file="$2" expected_sha="$3"
+            local META dest
+            META=$(gh api "repos/MNML-LLC/mnml-agents/contents/docs/skills-drafts/$skill/$file" 2>/dev/null) \
+              || { echo "WARN: 取得失敗 $skill/$file — スキルをスキップします"; return 1; }
+            local actual_sha
+            actual_sha=$(echo "$META" | jq -r '.sha')
+            if [ "$actual_sha" != "$expected_sha" ]; then
+              echo "WARN: SHA不一致 $skill/$file (expected=$expected_sha actual=$actual_sha) — スキルをスキップします"
+              return 1
+            fi
+            dest=".claude/skills/$skill/$file"
+            mkdir -p "$(dirname "$dest")"
+            echo "$META" | jq -r '.content' | base64 -d > "$dest"
+            [[ "$file" == scripts/* ]] && chmod +x "$dest"
+            return 0
+          }
+
+          # test-driven-development (SKILL.md + testing-anti-patterns.md)
+          if install_file "test-driven-development" "SKILL.md" "60d2609ca56c7177a98f462fb71af77844ce92af" && \
+             install_file "test-driven-development" "testing-anti-patterns.md" "e77ab6b6d65ecfb0d8212a32186bf68d18b5eade"; then
+            echo "✓ installed: test-driven-development"
+          fi
+
+          # executing-plans (SKILL.md のみ)
+          if install_file "executing-plans" "SKILL.md" "78d885406691f2b94e69ad06dcfc775226c9592f"; then
+            echo "✓ installed: executing-plans"
+          fi
+
+          # subagent-driven-development (SKILL.md + refs + scripts)
+          if install_file "subagent-driven-development" "SKILL.md"               "26760430003edd8b72e63c72458820d3a5a8a391" && \
+             install_file "subagent-driven-development" "implementer-prompt.md"   "218fcfeb57e62626a22851cef77807e65db874bf" && \
+             install_file "subagent-driven-development" "task-reviewer-prompt.md" "588a40227a79bf7ef97fb5b93f10f0f8f5f867b4" && \
+             install_file "subagent-driven-development" "scripts/task-brief"       "b046a2bb1c0d2b7fdd8e34b964601acac4d652eb" && \
+             install_file "subagent-driven-development" "scripts/review-package"   "88a00224dc7bdb2c5bc7899ea313cb28396806ce"; then
+            echo "✓ installed: subagent-driven-development"
+          fi
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
