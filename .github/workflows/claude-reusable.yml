@@ -181,9 +181,10 @@ jobs:
           github_token: ${{ secrets.GH_ADMIN_PAT || github.token }}
           claude_args: "--model claude-opus-4-7 --allowed-tools 'Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)' ${{ inputs.extra_claude_args }}"
 
-      - name: Run Claude Code (attempt 2 — uki, if attempt 1 failed)
+      - name: Run Claude Code (attempt 2 — uki, if attempt 1 not success)
         id: claude_a2
-        if: steps.claude_a1.outcome == 'failure' && secrets.CLAUDE_TOKEN_UKI != ''
+        # Issue #2345 レビュー: skipped も failure と同列に扱う (未設定 secret 経路対応)
+        if: steps.claude_a1.outcome != 'success' && secrets.CLAUDE_TOKEN_UKI != ''
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -191,9 +192,12 @@ jobs:
           github_token: ${{ secrets.GH_ADMIN_PAT || github.token }}
           claude_args: "--model claude-opus-4-7 --allowed-tools 'Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)' ${{ inputs.extra_claude_args }}"
 
-      - name: Run Claude Code (attempt 3 — ykfrost, if attempt 2 failed)
+      - name: Run Claude Code (attempt 3 — ykfrost, if attempt 2 not success)
         id: claude_a3
-        if: steps.claude_a1.outcome == 'failure' && steps.claude_a2.outcome == 'failure' && secrets.CLAUDE_TOKEN_YKFROST != ''
+        # Issue #2345 レビュー: skipped も failure と同列に扱う (a1/a2 が UKI 未設定で skipped の場合も a3 に到達)
+        if: steps.claude_a1.outcome != 'success' && steps.claude_a2.outcome != 'success' && secrets.CLAUDE_TOKEN_YKFROST != ''
+        # Issue #2345 レビュー: continue-on-error 必須 (無いと集約 step が skipped → silent failure)
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_TOKEN_YKFROST }}
