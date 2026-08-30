@@ -12,8 +12,17 @@ on:
         default: ''
         type: string
     secrets:
+      # Issue #2345 系列: マルチアカウント failover 対応
+      # 3個の org-level secret (CLAUDE_TOKEN_THEBOTCH/UKI/YKFROST) を試行順に使う
+      # 旧 CLAUDE_CODE_OAUTH_TOKEN は fallback として残す (移行期間中の互換性)
       CLAUDE_CODE_OAUTH_TOKEN:
-        required: true
+        required: false
+      CLAUDE_TOKEN_THEBOTCH:
+        required: false
+      CLAUDE_TOKEN_UKI:
+        required: false
+      CLAUDE_TOKEN_YKFROST:
+        required: false
       GH_ADMIN_PAT:
         required: false
 
@@ -161,13 +170,54 @@ jobs:
             echo "✓ installed: subagent-driven-development"
           fi
 
-      - name: Run Claude Code
-        id: claude
+      # Issue #2345 系列: 3 アカウント failover (thebotch → uki → ykfrost)
+      # rate_limit / auth 失敗を検知したら次のトークンで再試行
+      - name: Run Claude Code (attempt 1 — thebotch)
+        id: claude_a1
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_TOKEN_THEBOTCH || secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GH_ADMIN_PAT || github.token }}
           claude_args: "--model claude-opus-4-7 --allowed-tools 'Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)' ${{ inputs.extra_claude_args }}"
+
+      - name: Run Claude Code (attempt 2 — uki, if attempt 1 not success)
+        id: claude_a2
+        # Issue #2345 レビュー: skipped も failure と同列に扱う (未設定 secret 経路対応)
+        if: steps.claude_a1.outcome != 'success' && secrets.CLAUDE_TOKEN_UKI != ''
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_TOKEN_UKI }}
+          github_token: ${{ secrets.GH_ADMIN_PAT || github.token }}
+          claude_args: "--model claude-opus-4-7 --allowed-tools 'Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)' ${{ inputs.extra_claude_args }}"
+
+      - name: Run Claude Code (attempt 3 — ykfrost, if attempt 2 not success)
+        id: claude_a3
+        # Issue #2345 レビュー: skipped も failure と同列に扱う (a1/a2 が UKI 未設定で skipped の場合も a3 に到達)
+        if: steps.claude_a1.outcome != 'success' && steps.claude_a2.outcome != 'success' && secrets.CLAUDE_TOKEN_YKFROST != ''
+        # Issue #2345 レビュー: continue-on-error 必須 (無いと集約 step が skipped → silent failure)
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_TOKEN_YKFROST }}
+          github_token: ${{ secrets.GH_ADMIN_PAT || github.token }}
+          claude_args: "--model claude-opus-4-7 --allowed-tools 'Bash(npm*),Bash(npx*),Bash(node*),Bash(yarn*),Bash(pnpm*),Bash(uv*),Bash(python*),Bash(python3*),Bash(pip*),Bash(ruff*),Bash(make*),Bash(git*)' ${{ inputs.extra_claude_args }}"
+
+      # 少なくとも1つが成功したか判定 (後続 step の互換のため steps.claude.conclusion を模擬)
+      - name: Determine overall claude conclusion
+        id: claude
+        run: |
+          if [ "${{ steps.claude_a1.outcome }}" = "success" ] || \
+             [ "${{ steps.claude_a2.outcome }}" = "success" ] || \
+             [ "${{ steps.claude_a3.outcome }}" = "success" ]; then
+            echo "conclusion=success" >> "$GITHUB_OUTPUT"
+            echo "全 attempt を通じて少なくとも1つが成功"
+          else
+            echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+            echo "全 attempt が失敗 (a1=${{ steps.claude_a1.outcome }} a2=${{ steps.claude_a2.outcome }} a3=${{ steps.claude_a3.outcome }})"
+            exit 1
+          fi
 
       - name: Notify failure
         if: failure() && steps.claude.conclusion == 'failure'
