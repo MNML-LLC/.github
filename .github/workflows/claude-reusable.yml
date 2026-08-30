@@ -183,8 +183,10 @@ jobs:
 
       - name: Run Claude Code (attempt 2 — uki, if attempt 1 not success)
         id: claude_a2
-        # Issue #2345 レビュー: skipped も failure と同列に扱う (未設定 secret 経路対応)
-        if: steps.claude_a1.outcome != 'success' && secrets.CLAUDE_TOKEN_UKI != ''
+        # Issue #2345 レビュー: skipped も failure と同列に扱う
+        # 注: step-level if: では secrets context 使用不可 (actionlint 検証)。
+        # org-level secret は visibility=all で常時 available と仮定してチェック省略。
+        if: steps.claude_a1.outcome != 'success'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -194,8 +196,10 @@ jobs:
 
       - name: Run Claude Code (attempt 3 — ykfrost, if attempt 2 not success)
         id: claude_a3
-        # Issue #2345 レビュー: skipped も failure と同列に扱う (a1/a2 が UKI 未設定で skipped の場合も a3 に到達)
-        if: steps.claude_a1.outcome != 'success' && steps.claude_a2.outcome != 'success' && secrets.CLAUDE_TOKEN_YKFROST != ''
+        # Issue #2345 レビュー: skipped も failure と同列に扱う
+        # 注: step-level if: では secrets context 使用不可 (actionlint 検証)。
+        # org-level secret は visibility=all で常時 available と仮定してチェック省略。
+        if: steps.claude_a1.outcome != 'success' && steps.claude_a2.outcome != 'success'
         # Issue #2345 レビュー: continue-on-error 必須 (無いと集約 step が skipped → silent failure)
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
