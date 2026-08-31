@@ -366,7 +366,7 @@ jobs:
           ISSUE_NUM=$(printf '%s' "$PR_BODY" \
             | grep -oiP '\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#\d+' \
             | head -1 \
-            | grep -oP '\d+')
+            | grep -oP '\d+' || true)
           if [ -z "$ISSUE_NUM" ]; then
             echo "No explicit closing keyword found in PR body; skipping issue close"
             exit 0
