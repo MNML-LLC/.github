@@ -302,6 +302,17 @@ jobs:
           ISSUE_NUM: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
+          # Issue #3205: `gh pr merge --auto` (GitHub ネイティブ auto-merge) に委譲する。
+          # 旧ポーリング方式 (gh pr checks --watch → gh pr merge --squash) は同一 job 内で
+          # CI 完了を待つため job timeout (30分) 超えで永続滞留する (Issue #1137)。
+          # --auto はサーバ側が CI 完了を待つため job 存続時間に依存しない。
+          echo "Enabling native auto-merge for PR #${PR_NUM}..."
+          if gh pr merge "$PR_NUM" --repo "$REPO" --auto --squash --delete-branch; then
+            echo "Auto-merge enabled; GitHub will squash-merge once required checks pass."
+            exit 0
+          fi
+          echo "::warning::gh pr merge --auto failed (repo may not have 'Allow auto-merge' enabled). Falling back to polling-based merge." >&2
+
           echo "Waiting for CI checks to register on PR #${PR_NUM}..."
 
           # CI未登録レース対策 (#15): チェック件数が0の間は最大90秒リトライして待つ。
@@ -392,6 +403,14 @@ jobs:
           PR_NUM: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
+          # Issue #3205: --auto ファースト (Issue #1137 対応)
+          echo "Enabling native auto-merge for PR #${PR_NUM} (retry)..."
+          if gh pr merge "$PR_NUM" --repo "$REPO" --auto --squash --delete-branch; then
+            echo "Auto-merge enabled; GitHub will squash-merge once required checks pass."
+            exit 0
+          fi
+          echo "::warning::gh pr merge --auto failed. Falling back to polling-based merge." >&2
+
           echo "Retrying auto-merge for PR #${PR_NUM}..."
 
           # CI未登録レース対策 (#15): チェック件数が0の間は最大90秒リトライして待つ。
